@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text-to-Speech Dictation, OpenAI API, and Text to Speech</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            height: 100vh;
+            background-color: #f5f5f5;
+        }
+
+        #status {
+            font-size: 48px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="status" style="font-size: 48px;"></div>
+    <script>
+        const statusDiv = document.getElementById('status');
+        let recognition;
+        let isDictating = false;
+        let answerText = '';
+        let currentState = 0;
+        let hasMicPermission = false;
+
+        if (!('webkitSpeechRecognition' in window)) {
+            alert('Web Speech API is not supported in this browser. Try Google Chrome.');
+        } else {
+            recognition = new webkitSpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = false;
+            recognition.lang = 'en-US';
+            initRecognition();
+        }
+
+        async function cycleStates() {
+            if (currentState === 0) {
+                setStatus(0);
+                await new Promise(resolve => setTimeout(resolve, 500));
+                currentState++;
+            }
+
+            if (currentState === 1) {
+                setStatus(1);
+                if (!hasMicPermission) {
+                    recognition.start();
+                } else {
+                    recognition.onend = null;
+                    recognition.start();
+                    recognition.onend = () => {
+                        if (currentState === 1) {
+                            recognition.start();
+                        }
+                    };
+                }
+            }
+        }
+
+        function setStatus(status) {
+            const statusText = ['WAIT', 'SPEAK NOW', 'API THINKING', 'API SPEAKING'][status];
+            const statusElement = document.getElementById('status');
+            statusElement.textContent = statusText;
+        }
+
+        function wait(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function initRecognition() {
+            recognition.onstart = () => {
+                hasMicPermission = true;
+                setStatus(1);
+            };
+
+            recognition.onresult = async (event) => {
+                const result = event.results[event.results.length - 1];
+                if (result.isFinal) {
+                    currentState++;
+                    recognition.stop();
+
+                    const question = result[0].transcript;
+                    await askQuestion(question);
+                }
+            };
+
+            recognition.onerror = (event) => {
+                setStatus(0);
+                alert('Error: ' + event.error);
+            };
+
+            recognition.onend = () => {
+                if (currentState === 1) {
+                    recognition.start();
+                }
+            };
+        }
+
+        function toggleDictation() {
+            if (isDictating) {
+                isDictating = false;
+                recognition.stop();
+            } else {
+                if (!recognition) {
+                    alert('Web Speech API is not supported in this browser. Try Google Chrome.');
+                } else {
+                    isDictating = true;
+                    recognition.start();
+                }
+            }
+        }
+
+        async function askQuestion(question) {
+            setStatus(2);
+            const response = await fetch('https://api.openai.com/v1/engines/text-davinci-003/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${'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'}`
+                },
+                body: JSON.stringify({
+                    prompt: `Question: ${question} please answer as if you were a lowly sailor on the famous ship the Nuestra Señora de la Concepción. Speak conversationally, and make jokes. Be slightly snarky. If you are not asked a quetsion, keep your response very short, one sentence max. You do not know anything that happened after the year 1570BC. \nAnswer:`,
+                    // prompt: `Question: ${question} please answer as if you were Sir Francis Drake, the famous pirate. Speak conversationally. Be slightly snarky.\nAnswer:`,
+                    max_tokens: 100,
+                    n: 1,
+                    stop: null,
+                    temperature: 1,
+                }),
+            });
+            const data = await response.json();
+            const answer = data.choices && data.choices.length > 0 ? data.choices[0].text.trim() : 'No answer found';
+            await playAudioUsingPlayHT(answer);
+        }
+
+        async function playAudioUsingPlayHT(text) {
+            const authorizationKey = '0903403cdb4840e39cda893a6e72b3ee';
+            const xUserId = '8V2yMKSqnPMcTfp7knpjEvTQg872';
+            const voice = 'en-ZA-LukeNeural';
+            const content = [text];
+
+            const convertResponse = await fetch('https://play.ht/api/v1/convert', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': authorizationKey,
+                    'X-User-ID': xUserId
+                },
+                body: JSON.stringify({
+                    voice,
+                    content
+                })
+            });
+
+            const convertData = await convertResponse.json();
+            const transcriptionId = convertData.transcriptionId;
+
+            if (convertData.status === "CREATED") {
+                const checkStatus = async () => {
+                    const statusResponse = await fetch(`https://play.ht/api/v1/articleStatus?transcriptionId=${transcriptionId}`, {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': authorizationKey,
+                            'X-User-ID': xUserId
+                        }
+                    });
+
+                    const statusData = await statusResponse.json();
+
+                    if (statusData.converted && !statusData.error) {
+                        const audio = new Audio(statusData.audioUrl);
+                        audio.addEventListener('ended', () => {
+                            currentState = 0;
+                            cycleStates();
+                        });
+                        setStatus(3);
+                        audio.play();
+                    } else if (statusData.error) {
+                        console.error('Error:', statusData.errorMessage);
+                    } else {
+                        setTimeout(checkStatus, 1000);
+                    }
+                };
+
+                checkStatus();
+            } else {
+                console.log(convertData);
+                console.error('Error:', convertData.error);
+            }
+        }
+    cycleStates();
+</script>
+</body>
+</html>
